@@ -2,6 +2,8 @@ import logging
 from telethon import TelegramClient, events, Button
 import aiohttp
 import datetime
+from urllib.parse import unquote
+import base64
 
 # Настройки для Telethon
 API_ID = '26048349'  # Замените на ваш API_ID
@@ -18,93 +20,41 @@ user_responses = {}
 # Создание клиента Telegram
 client = TelegramClient('bot_session', API_ID, API_HASH)
 
-
-
-
-async def send_news(user_id):
-    if user_id not in user_responses:
-        user_responses[user_id] = {'news_index': 0}
-    elif 'news_index' not in user_responses[user_id]:
-        user_responses[user_id]['news_index'] = 0
-
-    news_list = await fetch_news(user_id)
-
-    if news_list:
-        news = news_list[0]  # Поскольку fetch_news возвращает список с одной новостью
-        news_text = f"**{news['name']}**\n{news['description']}\n\n{news['content']}"
-        markup = [Button.inline("Далее", data="next_news")]
-
-        if news['media_url']:
-            await client.send_file(user_id, news['media_url'], caption=news_text, buttons=markup)
-        else:
-            await client.send_message(user_id, news_text, buttons=markup, parse_mode='md')
-
-        # Увеличиваем индекс новости для пользователя
-        user_responses[user_id]['news_index'] += 1
-    else:
-        await client.send_message(user_id, "Это была последняя новость.")
-        user_responses[user_id]['news_index'] = 0  # Сброс индекса новостей для повторной итерации
-
-
-
-async def fetch_news(user_id):
-    current_index = user_responses[user_id].get('news_index', 0)
-    url = f'https://vedaverse.pro/api/contents?pagination[start]={current_index}&pagination[limit]=1'
-    headers = {
-        'Authorization': f'Bearer {API_KEY}',
-        'Content-Type': 'application/json'
-    }
-
-    logging.info("Fetching the next news item from the database.")
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            response_status = response.status
-            response_data = await response.json() if response_status == 200 else {}
-
-            if response_data.get('data', []):
-                item = response_data['data'][0]
-                return [{
-                    'name': item['attributes']['name'],
-                    'description': item['attributes']['description'],
-                    'content': item['attributes']['content_txt'],
-                    'media_url': item['attributes'].get('media_url')
-                }]
-            else:
-                logging.error("Failed to fetch news or no news available.")
-                return []
-
-
-
-
-async def fetch_media_urls(session, media_ids):
-    media_urls = {}
-    for media_id in media_ids:
-        media_url = f'https://vedaverse.pro/api/upload/files/{media_id}'
-        async with session.get(media_url) as response:
-            if response.status == 200:
-                data = await response.json()
-                media_urls[media_id] = data['url']  # Предполагаем, что ответ содержит URL
-                logging.info(f"Media URL for ID {media_id}: {data['url']}")
-            else:
-                logging.error(f"Failed to fetch media URL for ID {media_id}. Status: {response.status}")
-    return media_urls
-
-
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
+    full_command = event.message.message
+    logging.info(f"Full command received: {full_command}")
+
+    # Проверяем, есть ли параметры после '/start '
+    if len(full_command.split()) > 1:
+        encoded_params = full_command.split(maxsplit=1)[1]
+        try:
+            # Добавляем недостающие символы "=" для декодирования
+            padding = '=' * (4 - len(encoded_params) % 4)
+            encoded_params += padding
+            decoded_params = base64.urlsafe_b64decode(encoded_params).decode()
+            logging.info(f"Decoded params: {decoded_params}")
+            utm_data = dict(param.split('=') for param in decoded_params.split('&') if '=' in param)
+            utm_source = utm_data.get('utm_source', 'unknown')
+            utm_medium = utm_data.get('utm_medium', 'unknown')
+            logging.info(f"Received UTM parameters: source={utm_source}, medium={utm_medium}")
+        except Exception as e:
+            logging.error(f"Error decoding params: {e}")
+            utm_source = utm_medium = 'unknown'
+    else:
+        utm_source = utm_medium = 'unknown'
+        logging.info("No UTM parameters found.")
+
     user_id = event.sender_id
     sender = await event.get_sender()
     first_name = sender.first_name or "Неизвестно"
     last_name = sender.last_name or "Неизвестно"
     telegram_username = sender.username
-    
 
     logging.info(f"Received /start command from user_id {user_id}")
 
     user_info = await check_user(user_id, first_name, last_name, telegram_username)
 
-       
     if user_info is None:
         logging.info("User not found, proceeding with registration")
 
@@ -123,7 +73,17 @@ async def start(event):
             logging.error(f"Failed to download avatar: {str(e)}")
             photo_path = None  # В случае ошибки также устанавливаем photo_path в None
 
-        registration_response = await register_user(user_id, telegram_username, first_name, last_name, photo_path)
+        registration_response = await register_user(
+            user_id=user_id, 
+            username=telegram_username, 
+            first_name=first_name, 
+            last_name=last_name, 
+            photo_path=photo_path, 
+            utm_source=utm_source, 
+            utm_medium=utm_medium, 
+            utm_campaign='unknown'
+        )
+
         if registration_response:
             logging.info("Registration successful, starting user testing")
             await client.send_message(user_id, f"Привет, {first_name}! Вы успешно зарегистрированы.")
@@ -131,10 +91,6 @@ async def start(event):
         else:
             logging.error("Registration failed")
             await client.send_message(user_id, "Не удалось зарегистрировать пользователя. Пожалуйста, попробуйте позже.")
-  
-    
-    
-    
     elif not user_info.get('gender') or not user_info.get('country') or user_info.get('news_preference') is None:
         logging.info("User found but missing some information, starting user testing")
         await manage_user_testing(event)
@@ -145,14 +101,19 @@ async def start(event):
 @client.on(events.NewMessage)
 async def handle_all_messages(event):
     user_id = event.sender_id
-    if event.text == '/start':
-        # Проверка, находится ли пользователь в процессе тестирования
-        if user_responses.get(user_id, {}).get('in_testing'):
-            logging.info("User is currently in testing, ignoring further /start commands for user_id: {}".format(user_id))
-            return
-    else:
-        logging.info(f"Handling general message: {event.text} from user_id {user_id}")
-        await event.respond('Добро пожаловать! Давай общаться.', buttons=Button.clear())
+
+    # Проверка, находится ли пользователь в процессе тестирования
+    if user_responses.get(user_id, {}).get('in_testing'):
+        logging.info(f"User is currently in testing, ignoring message: {event.text} from user_id: {user_id}")
+        return
+
+    # Игнорируем команду /start, чтобы не возникал конфликт
+    if event.text.startswith('/start'):
+        return
+
+    logging.info(f"Handling general message: {event.text} from user_id {user_id}")
+    await event.respond('Добро пожаловать! Давай общаться.', buttons=Button.clear())
+
 
 async def main():
     logging.info("Starting the bot")
@@ -160,7 +121,7 @@ async def main():
     await client.run_until_disconnected()
 
 async def check_user(user_id, name, surname, telegram):
-    url = 'https://vedaverse.pro/api/followers/'
+    url = 'https://robogpt.me/api/followers/'
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type': 'application/json'
@@ -195,7 +156,7 @@ async def check_user(user_id, name, surname, telegram):
                 logging.info(f"No db_user_id found for user_id {user_id}. Data set to None.")
                 return None
 
-async def register_user(user_id, username, first_name, last_name, photo_path):
+async def register_user(user_id, username, first_name, last_name, photo_path, utm_source, utm_medium, utm_campaign):
     logging.info(f"Starting registration for user: {username}")
     
     if photo_path:
@@ -208,8 +169,7 @@ async def register_user(user_id, username, first_name, last_name, photo_path):
     else:
         image_id = None
 
-
-    url = 'https://vedaverse.pro/api/followers'
+    url = 'https://robogpt.me/api/followers'
     headers = {'Authorization': f'Bearer {API_KEY}', 'Content-Type': 'application/json'}
 
     data = {
@@ -217,6 +177,9 @@ async def register_user(user_id, username, first_name, last_name, photo_path):
             'tgUserID': user_id,
             'telegram': username if username is not None else "",  # Заменяем None на пустую строку
             'name': first_name,
+            'utm_source': utm_source,  # Сохраняем UTM-метку источника
+            'utm_medium': utm_medium,  # Сохраняем UTM-метку канала
+            'utm_campaign': utm_campaign,  # Сохраняем UTM-метку кампании
             'surname': last_name,
             'blocked': False,
             'lastLogin': datetime.datetime.now().isoformat(),
@@ -251,7 +214,7 @@ async def register_user(user_id, username, first_name, last_name, photo_path):
                 return None
 
 async def upload_image_to_media_library(image_path):
-    url = 'https://vedaverse.pro/api/upload'
+    url = 'https://robogpt.me/api/upload'
     headers = {'Authorization': f'Bearer {API_KEY}'}
     files = {'files': open(image_path, 'rb')}
     async with aiohttp.ClientSession() as session:
@@ -304,8 +267,6 @@ async def manage_user_testing(event, callback_data=None):
             await submit_responses(user_responses[user_id]['db_user_id'], user_responses[user_id])
             await client.send_message(user_id, "Спасибо за ответы! Ваша информация сохранена.")
 
-
-
 def update_user_state(user_id, data):
     """Обновляем состояние пользователя на основе полученного ответа."""
     logging.info(f"Updating state for user_id {user_id} with data {data}")
@@ -326,20 +287,57 @@ def update_user_state(user_id, data):
     else:
         logging.error(f"Unhandled state: {state} with data: {data}")
 
-async def send_question(user_id, state):
-    logging.info(f"Sending question for state {state} to user_id {user_id}")
-    if state == "ask_gender":
-        markup = [Button.inline("Мужчина", data="men"), Button.inline("Женщина", data="woman")]
-        await client.send_message(user_id, "Вы мужчина или женщина?", buttons=markup)
-    elif state == "ask_country":
-        markup = [Button.inline("Россия", data="Russia"), Button.inline("Другая страна", data="other")]
-        await client.send_message(user_id, "В какой стране вы проживаете?", buttons=markup)
-    elif state == "ask_news":
-        markup = [Button.inline("Да", data="yes"), Button.inline("Нет", data="no")]
-        await client.send_message(user_id, "Хотите ли вы получать новости?", buttons=markup)
-    elif state == "completed":
-        logging.info(f"Test sequence completed for user_id {user_id}")
-        await client.send_message(user_id, "Спасибо за ответы! Ваша информация сохранена.")
+async def send_news(user_id):
+    if user_id not in user_responses:
+        user_responses[user_id] = {'news_index': 0}
+    elif 'news_index' not in user_responses[user_id]:
+        user_responses[user_id]['news_index'] = 0
+
+    news_list = await fetch_news(user_id)
+
+    if news_list:
+        news = news_list[0]  # Поскольку fetch_news возвращает список с одной новостью
+        news_text = f"**{news['name']}**\n{news['description']}\n\n{news['content']}"
+        markup = [Button.inline("Далее", data="next_news")]
+
+        if news['media_url']:
+            await client.send_file(user_id, news['media_url'], caption=news_text, buttons=markup)
+        else:
+            await client.send_message(user_id, news_text, buttons=markup, parse_mode='md')
+
+        # Увеличиваем индекс новости для пользователя
+        user_responses[user_id]['news_index'] += 1
+    else:
+        await client.send_message(user_id, "Это была последняя новость.")
+        await update_user_status(user_id, 'Reader')
+        user_responses[user_id]['news_index'] = 0  # Сброс индекса новостей для повторной итерации
+
+async def fetch_news(user_id):
+    current_index = user_responses[user_id].get('news_index', 0)
+    url = f'https://robogpt.me/api/contents?pagination[start]={current_index}&pagination[limit]=1'
+    headers = {
+        'Authorization': f'Bearer {API_KEY}',
+        'Content-Type': 'application/json'
+    }
+
+    logging.info("Fetching the next news item from the database.")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            response_status = response.status
+            response_data = await response.json() if response_status == 200 else {}
+
+            if response_data.get('data', []):
+                item = response_data['data'][0]
+                return [{
+                    'name': item['attributes']['name'],
+                    'description': item['attributes']['description'],
+                    'content': item['attributes']['content_txt'],
+                    'media_url': item['attributes'].get('media_url')
+                }]
+            else:
+                logging.error("Failed to fetch news or no news available.")
+                return []
 
 @client.on(events.CallbackQuery)
 async def handle_callback_query(event):
@@ -354,9 +352,8 @@ async def handle_callback_query(event):
     else:
         await manage_user_testing(event, callback_data=data)
 
-
 async def submit_responses(db_user_id, responses):
-    url = f'https://vedaverse.pro/api/followers/{db_user_id}'
+    url = f'https://robogpt.me/api/followers/{db_user_id}'
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type': 'application/json'
@@ -379,7 +376,29 @@ async def submit_responses(db_user_id, responses):
             else:
                 logging.error(f"Failed to update user info and status for db_user_id {db_user_id}: HTTP {response.status}, Response: {response_text}")
 
+async def update_user_status(user_id, new_status):
+    if user_id in user_responses and 'db_user_id' in user_responses[user_id]:
+        db_user_id = user_responses[user_id]['db_user_id']
+        url = f'https://robogpt.me/api/followers/{db_user_id}'
+        headers = {
+            'Authorization': f'Bearer {API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        data_to_send = {
+            'type': new_status
+        }
+        logging.info(f"Updating user status to {new_status} for db_user_id {db_user_id}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.put(url, json={'data': data_to_send}, headers=headers) as response:
+                response_text = await response.text()
+                if response.status == 200:
+                    logging.info(f"User status updated successfully for db_user_id {db_user_id}. Server response: {response_text}")
+                else:
+                    logging.error(f"Failed to update user status for db_user_id {db_user_id}: HTTP {response.status}, Response: {response_text}")
+    else:
+        logging.error(f"No db_user_id found for user_id {user_id}. Cannot update status.")
+
 if __name__ == '__main__':
     client.start(bot_token=TELEGRAM_BOT_TOKEN)
     client.run_until_disconnected()
-
