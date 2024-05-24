@@ -1,4 +1,5 @@
 import logging
+import os
 from telethon import TelegramClient, events, Button
 import aiohttp
 import datetime
@@ -6,10 +7,10 @@ from urllib.parse import unquote
 import base64
 
 # Настройки для Telethon
-API_ID = '26048349'  # Замените на ваш API_ID
-API_HASH = 'e5eb0470fa813af69adbf5c4b9b6abd6'  # Замените на ваш API_HASH
-TELEGRAM_BOT_TOKEN = '7163739772:AAHB8FXXp_IStmyy8pmMd8Tz20nJNr6DhSc'  # Замените на токен вашего бота
-API_KEY = '4224989b0d8a6e1e1608b02c73d158c0fbe4151d646be03ee0cd54c374a96d2164eee9338915ae376c43c6fd25bde9c79967476829f049cddd8ed6f00bc68f02b1f7a4a06c42c11655950a2c2d5cd2d00b1537aa63b66f30332e8e2935165fa622961ee5fe962cbb7bc9b679d816f0e82053e452bfd70573c745eadb709baaec'  # Замените на ваш реальный API-ключ
+API_ID = os.environ['API_ID']  # Замените на ваш API_ID
+API_HASH = os.environ['API_HASH']  # Замените на ваш API_HASH
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']  # Замените на токен вашего бота
+API_KEY = os.environ['API_KEY']  # Замените на ваш реальный API-ключ
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -74,13 +75,13 @@ async def start(event):
             photo_path = None  # В случае ошибки также устанавливаем photo_path в None
 
         registration_response = await register_user(
-            user_id=user_id, 
-            username=telegram_username, 
-            first_name=first_name, 
-            last_name=last_name, 
-            photo_path=photo_path, 
-            utm_source=utm_source, 
-            utm_medium=utm_medium, 
+            user_id=user_id,
+            username=telegram_username,
+            first_name=first_name,
+            last_name=last_name,
+            photo_path=photo_path,
+            utm_source=utm_source,
+            utm_medium=utm_medium,
             utm_campaign='unknown'
         )
 
@@ -158,7 +159,7 @@ async def check_user(user_id, name, surname, telegram):
 
 async def register_user(user_id, username, first_name, last_name, photo_path, utm_source, utm_medium, utm_campaign):
     logging.info(f"Starting registration for user: {username}")
-    
+
     if photo_path:
         try:
             image_id = await upload_image_to_media_library(photo_path)
@@ -241,7 +242,7 @@ async def manage_user_testing(event, callback_data=None):
         update_user_state(user_id, callback_data)
 
     current_state = user_responses[user_id].get("state", "ask_gender")
-    
+
     # Если состояние "ask_gender", значит тестирование начинается
     if current_state == "ask_gender":
         # Отправляем приветственное сообщение перед первым вопросом
@@ -271,7 +272,7 @@ def update_user_state(user_id, data):
     """Обновляем состояние пользователя на основе полученного ответа."""
     logging.info(f"Updating state for user_id {user_id} with data {data}")
     state = user_responses[user_id].get("state", "ask_gender")
-    
+
     if state == "ask_gender":
         if data == "men" or data == "woman":
             user_responses[user_id]["gender"] = data
@@ -344,7 +345,7 @@ async def handle_callback_query(event):
     user_id = event.sender_id
     data = event.data.decode('utf-8')
     logging.info(f"CallbackQuery received with data: {data} from user {user_id}")
-    
+
     await event.answer()
 
     if data == "next_news":
